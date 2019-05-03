@@ -25,6 +25,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gohugoio/hugo/hugofs/files"
+
 	"github.com/gohugoio/hugo/hugofs"
 
 	"github.com/gohugoio/hugo/helpers"
@@ -50,7 +52,7 @@ func NewContent(
 
 	if isDir {
 
-		langFs := hugofs.NewLanguageFs(s.Language().Lang, sites.LanguageSet(), archetypeFs)
+		langFs := afero.NewMemMapFs() // TODO(bep) mod hugofs.NewLanguageFs(s.Language().Lang, sites.LanguageSet(), archetypeFs)
 
 		cm, err := mapArcheTypeDir(ps, langFs, archetypeFilename)
 		if err != nil {
@@ -111,9 +113,9 @@ func NewContent(
 	return nil
 }
 
-func targetSite(sites *hugolib.HugoSites, fi *hugofs.LanguageFileInfo) *hugolib.Site {
+func targetSite(sites *hugolib.HugoSites, fi hugofs.FileMetaInfo) *hugolib.Site {
 	for _, s := range sites.Sites {
-		if fi.Lang() == s.Language().Lang {
+		if fi.Meta().Lang() == s.Language().Lang {
 			return s
 		}
 	}
@@ -127,7 +129,7 @@ func newContentFromDir(
 	cm archetypeMap, name, targetPath string) error {
 
 	for _, f := range cm.otherFiles {
-		filename := f.Filename()
+		filename := f.Meta().Filename()
 		// Just copy the file to destination.
 		in, err := sourceFs.Open(filename)
 		if err != nil {
@@ -156,7 +158,7 @@ func newContentFromDir(
 	}
 
 	for _, f := range cm.contentFiles {
-		filename := f.Filename()
+		filename := f.Meta().Filename()
 		s := targetSite(sites, f)
 		targetFilename := filepath.Join(targetPath, strings.TrimPrefix(filename, archetypeDir))
 
@@ -177,9 +179,9 @@ func newContentFromDir(
 
 type archetypeMap struct {
 	// These needs to be parsed and executed as Go templates.
-	contentFiles []*hugofs.LanguageFileInfo
+	contentFiles []hugofs.FileMetaInfo
 	// These are just copied to destination.
-	otherFiles []*hugofs.LanguageFileInfo
+	otherFiles []hugofs.FileMetaInfo
 	// If the templates needs a fully built site. This can potentially be
 	// expensive, so only do when needed.
 	siteUsed bool
@@ -202,9 +204,9 @@ func mapArcheTypeDir(
 			return nil
 		}
 
-		fil := fi.(*hugofs.LanguageFileInfo)
+		fil := fi.(hugofs.FileMetaInfo)
 
-		if hugolib.IsContentFile(filename) {
+		if files.IsContentFile(filename) {
 			m.contentFiles = append(m.contentFiles, fil)
 			if !m.siteUsed {
 				m.siteUsed, err = usesSiteVar(fs, filename)

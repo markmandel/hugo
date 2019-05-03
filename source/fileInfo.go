@@ -14,10 +14,11 @@
 package source
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/pkg/errors"
 
 	"github.com/gohugoio/hugo/common/hugio"
 
@@ -90,10 +91,11 @@ type FileWithoutOverlap interface {
 	// Hugo content files being one of them, considered to be unique.
 	UniqueID() string
 
-	FileInfo() os.FileInfo
+	FileInfo() hugofs.FileMetaInfo
 }
 
 // A ReadableFile is a File that is readable.
+// TODO(bep) mod get rid of this
 type ReadableFile interface {
 	File
 	Open() (hugio.ReadSeekCloser, error)
@@ -107,7 +109,7 @@ type FileInfo struct {
 
 	sp *SourceSpec
 
-	fi os.FileInfo
+	fi hugofs.FileMetaInfo
 
 	// Derived from filename
 	ext  string // Extension without any "."
@@ -179,13 +181,14 @@ func (fi *FileInfo) UniqueID() string {
 }
 
 // FileInfo returns a file's underlying os.FileInfo.
-func (fi *FileInfo) FileInfo() os.FileInfo { return fi.fi }
+func (fi *FileInfo) FileInfo() hugofs.FileMetaInfo { return fi.fi }
 
 func (fi *FileInfo) String() string { return fi.BaseFileName() }
 
 // Open implements ReadableFile.
 func (fi *FileInfo) Open() (hugio.ReadSeekCloser, error) {
-	f, err := fi.sp.SourceFs.Open(fi.Filename())
+	f, err := fi.fi.Meta().Open()
+
 	return f, err
 }
 
@@ -225,38 +228,36 @@ func NewTestFile(filename string) *FileInfo {
 	}
 }
 
-// NewFileInfo returns a new FileInfo structure.
-func (sp *SourceSpec) NewFileInfo(baseDir, filename string, isLeafBundle bool, fi os.FileInfo) *FileInfo {
+func (sp *SourceSpec) NewFileInfo(fi hugofs.FileMetaInfo) (*FileInfo, error) {
 
-	var lang, translationBaseName, relPath string
+	m := fi.Meta()
 
-	if fp, ok := fi.(hugofs.FilePather); ok {
-		filename = fp.Filename()
-		baseDir = fp.BaseDir()
-		relPath = fp.Path()
+	filename := m.Filename()
+	relPath := m.Path()
+	isLeafBundle := m.Classifier() == "leaf"
+
+	if relPath == "" || strings.Contains(relPath, "TODO") {
+		return nil, errors.Errorf("no Path provided by %v (%T)", m, m.Fs())
 	}
 
-	if fl, ok := fi.(hugofs.LanguageAnnouncer); ok {
-		lang = fl.Lang()
-		translationBaseName = fl.TranslationBaseName()
+	if filename == "" || strings.Contains(filename, "TODO") {
+		return nil, errors.Errorf("no Filename provided by %v (%T)", m, m.Fs())
 	}
 
-	dir, name := filepath.Split(filename)
+	relDir := filepath.Dir(relPath)
+	if relDir == "." {
+		relDir = ""
+	}
+	if !strings.HasSuffix(relDir, helpers.FilePathSeparator) {
+		relDir = relDir + helpers.FilePathSeparator
+	}
+
+	lang := m.Lang()
+	translationBaseName := m.GetString("translationBaseName")
+
+	dir, name := filepath.Split(relPath)
 	if !strings.HasSuffix(dir, helpers.FilePathSeparator) {
 		dir = dir + helpers.FilePathSeparator
-	}
-
-	baseDir = strings.TrimSuffix(baseDir, helpers.FilePathSeparator)
-
-	relDir := ""
-	if dir != baseDir {
-		relDir = strings.TrimPrefix(dir, baseDir)
-	}
-
-	relDir = strings.TrimPrefix(relDir, helpers.FilePathSeparator)
-
-	if relPath == "" {
-		relPath = filepath.Join(relDir, name)
 	}
 
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
@@ -277,14 +278,77 @@ func (sp *SourceSpec) NewFileInfo(baseDir, filename string, isLeafBundle bool, f
 		lang:                lang,
 		ext:                 ext,
 		dir:                 dir,
-		relDir:              relDir,
-		relPath:             relPath,
+		relDir:              relDir,  // Dir()
+		relPath:             relPath, // Path()
 		name:                name,
-		baseName:            baseName,
+		baseName:            baseName, // BaseFileName()
 		translationBaseName: translationBaseName,
 		isLeafBundle:        isLeafBundle,
 	}
 
-	return f
+	return f, nil
+
+}
+
+// NewFileInfo returns a new FileInfo structure.
+// TODO(bep) mod remove
+func (sp *SourceSpec) NewFileInfoOld(fi hugofs.FileMetaInfo, isLeafBundle bool) (*FileInfo, error) {
+
+	m := fi.Meta()
+
+	filename := m.Filename()
+	relPath := m.Path()
+
+	if relPath == "" || strings.Contains(relPath, "TODO") {
+		return nil, errors.Errorf("no Path provided by %v (%T)", m, m.Fs())
+	}
+
+	if filename == "" || strings.Contains(filename, "TODO") {
+		return nil, errors.Errorf("no Filename provided by %v (%T)", m, m.Fs())
+	}
+
+	relDir := filepath.Dir(relPath)
+	if relDir == "." {
+		relDir = ""
+	}
+	if !strings.HasSuffix(relDir, helpers.FilePathSeparator) {
+		relDir = relDir + helpers.FilePathSeparator
+	}
+
+	lang := m.Lang()
+	translationBaseName := m.GetString("translationBaseName")
+
+	dir, name := filepath.Split(relPath)
+	if !strings.HasSuffix(dir, helpers.FilePathSeparator) {
+		dir = dir + helpers.FilePathSeparator
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+	baseName := helpers.Filename(name)
+
+	if translationBaseName == "" {
+		// This is usyally provided by the filesystem. But this FileInfo is also
+		// created in a standalone context when doing "hugo new". This is
+		// an approximate implementation, which is "good enough" in that case.
+		fileLangExt := filepath.Ext(baseName)
+		translationBaseName = strings.TrimSuffix(baseName, fileLangExt)
+	}
+
+	f := &FileInfo{
+		sp:                  sp,
+		filename:            filename,
+		fi:                  fi,
+		lang:                lang,
+		ext:                 ext,
+		dir:                 dir,
+		relDir:              relDir,  // Dir()
+		relPath:             relPath, // Path()
+		name:                name,
+		baseName:            baseName, // BaseFileName()
+		translationBaseName: translationBaseName,
+		isLeafBundle:        isLeafBundle,
+	}
+
+	return f, nil
 
 }
